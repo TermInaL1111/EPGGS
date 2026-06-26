@@ -1,0 +1,107 @@
+digraph EPGGS {
+    rankdir=TB;
+    fontname="Helvetica";
+    node [fontname="Helvetica", fontsize=11];
+    edge [fontname="Helvetica", fontsize=9];
+
+    // ── Input ──
+    input [label="Event Stream\n(t,x,y,p)" shape=parallelogram style=filled fillcolor="#e3f2fd"];
+
+    // ── Preprocessing ──
+    preprocessing [label="Event → Voxel Grid\n5 bins + 3 frame = 8ch\n448×448" shape=box style=filled fillcolor="#e8eaf6"];
+
+    // ── REALM Alignment (from HuggingFace) ──
+    subgraph cluster_REALM {
+        label="REALM (viciopoli/REALM, 冻结)";
+        style=filled;
+        fillcolor="#f5f5f5";
+        color="#9e9e9e";
+        fontsize=10;
+
+        realm_encoder [label="Event Encoder\n(DUNE ViT-Base + LoRA)" shape=box style=filled fillcolor="#e0e0e0"];
+        realm_projector [label="Projector\n(Linear 768→1024)" shape=box style=filled fillcolor="#e0e0e0"];
+    }
+
+    // ── VGGT (Frozen) ──
+    subgraph cluster_VGGT {
+        label="VGGT-1B (facebook/VGGT-1B, 冻结)";
+        style=filled;
+        fillcolor="#fff3e0";
+        color="#ff9800";
+        fontsize=10;
+
+        vggt [label="24层 Alternating Attention\n(帧内 Attention ↔ 全局 Attention)" shape=box style=filled fillcolor="#ffe0b2"];
+    }
+
+    // ── VGGT Output Tokens ──
+    camera_token [label="Camera Token\nt̂_g" shape=oval style=filled fillcolor="#fff9c4"];
+    image_token [label="Image Tokens\nt̂_I^{1..4}\n(4 intermediate layers)" shape=oval style=filled fillcolor="#fff9c4"];
+
+    // ── Heads ──
+    subgraph cluster_heads {
+        label="Heads";
+        style=filled;
+        fillcolor="#e8f5e9";
+        color="#4caf50";
+        fontsize=10;
+
+        fc [label="F_C 位姿头\n4层 SelfAttn+Linear\n[微调, <1M]" shape=box style=filled fillcolor="#a5d6a7"];
+        fd [label="VGGT depth_head\nDPT 解码\n[冻结]" shape=box style=filled fillcolor="#c8e6c9"];
+        intensity [label="Intensity UNet Decoder\n上采样+Skip连接\n[训练, ~5M]" shape=box style=filled fillcolor="#81c784"];
+        gaussian [label="Gaussian Head\nGSRegressor\n[训练, ~2M]" shape=box style=filled fillcolor="#66bb6a"];
+    }
+
+    // ── Outputs ──
+    pose_out [label="位姿 p_i\n(6-DoF)" shape=parallelogram style=filled fillcolor="#f3e5f5"];
+    depth_out [label="深度图 D\n(1ch)" shape=parallelogram style=filled fillcolor="#f3e5f5"];
+    intensity_out [label="灰度图 I\n(1ch, [0,1])" shape=parallelogram style=filled fillcolor="#f3e5f5"];
+    gs_out [label="高斯参数\nR(4ch), S(3ch), α(1ch)" shape=parallelogram style=filled fillcolor="#f3e5f5"];
+
+    // ── Render ──
+    render [label="3DGS 光栅化\n→ 渲染图像" shape=box style=filled fillcolor="#ffebee"];
+
+    // ── Loss ──
+    loss [label="L_total = L_render + L_depth\n+ L_pose + L_intensity\n(GT 监督: Ev3D-S)" shape=component style=filled fillcolor="#ffcdd2"];
+
+    // ── Edges ──
+    input -> preprocessing;
+    preprocessing -> realm_encoder;
+    realm_encoder -> realm_projector [label="学生token"];
+    realm_projector -> vggt [label="伪 DINOv2 token\n(B, N, 1024)"];
+
+    vggt -> camera_token;
+    vggt -> image_token;
+
+    camera_token -> fc;
+    image_token -> fd [label="Layer 6,12,18,24"];
+    image_token -> intensity;
+    image_token -> gaussian [label="底层特征\n32ch"];
+
+    fc -> pose_out;
+    fd -> depth_out;
+    intensity -> intensity_out;
+    gaussian -> gs_out;
+
+    depth_out -> render;
+    intensity_out -> render;
+    gs_out -> render;
+    pose_out -> render;
+
+    render -> loss;
+
+    // ── Legend ──
+    subgraph cluster_legend {
+        label="图例";
+        style=filled;
+        fillcolor="#fafafa";
+        color="#bdbdbd";
+        fontsize=9;
+
+        frozen [label="冻结 (不可训练)" shape=box style=filled fillcolor="#e0e0e0" width=1.2];
+        trainable [label="训练 (可训练)" shape=box style=filled fillcolor="#66bb6a" width=1.2];
+        finetune [label="微调 (<1M params)" shape=box style=filled fillcolor="#a5d6a7" width=1.2];
+        data [label="数据/输出" shape=parallelogram style=filled fillcolor="#e3f2fd" width=1.2];
+
+        frozen -> trainable -> finetune -> data [style=invis];
+    }
+}
