@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pt
+*.pth
+*.bin
+*.safetensors
+output/
+checkpoints/
+*.log
+.DS_Store
+.vscode/
+.idea/
