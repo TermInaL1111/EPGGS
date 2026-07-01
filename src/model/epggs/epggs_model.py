@@ -2,63 +2,45 @@
 EPGGS: Event-based Generalizable Gaussian Splatting for Pose-Free 3D Reconstruction.
 
 Architecture:
-    Event Voxel → Student ViT (trainable) → Projector (trainable) → Pseudo DINOv2 Tokens
-    → VGGT Aggregator (frozen) → Camera Head / Depth Head / Intensity Head / Gaussian Head
+    Event Voxel → REALM (frozen, HF: viciopoli/REALM) → Pseudo DINOv2 Tokens
+    → VGGT Aggregator (frozen, HF: facebook/VGGT-1B) → Camera/Depth/Intensity/Gaussian Heads
 """
 import torch
 import torch.nn as nn
 from typing import Optional
 
-# REALM-style Student ViT + Projector (we'll refactor into separate files later)
-from src.model.epggs.student_encoder import StudentEncoder
-
 
 class EPGGSModel(nn.Module):
-    def __init__(
-        self,
-        # Student encoder params (REALM-style)
-        student_image_size: int = 336,
-        student_patch_size: int = 14,
-        student_embed_dim: int = 768,
-        student_depth: int = 12,
-        student_num_heads: int = 12,
-        # Projector params
-        projector_num_blocks: int = 2,
-        projector_scale: float = 1.0,
-        # VGGT is loaded separately via huggingface
-    ):
+    def __init__(self):
         super().__init__()
 
-        # ── Stage 1: Student Encoder (trainable) ──
-        self.student = StudentEncoder(
-            image_size=student_image_size,
-            patch_size=student_patch_size,
-            embed_dim=student_embed_dim,
-            depth=student_depth,
-            num_heads=student_num_heads,
-            in_chans=8,  # 3ch event_frame + 5ch event_voxel (EvGGS format)
-        )
+        # ── Stage 1: REALM (frozen, loaded from HuggingFace) ──
+        self.realm = None           # REALM model (encoder_ev + projector)
+        self._realm_loaded = False
 
-        # ── Stage 2: Projector (trainable) ──
-        self.projector = nn.Sequential(
-            nn.Linear(student_embed_dim, 1024),  # Map to DINOv2 dimension
-            nn.LayerNorm(1024),
-        )
-        self.proj_scale = nn.Parameter(torch.ones(1) * projector_scale)
+        # ── Stage 2: VGGT (frozen, loaded from HuggingFace) ──
+        self.aggregator = None      # VGGT alternating-attention
+        self.camera_head = None     # Pose prediction head
+        self.depth_head = None      # Depth prediction head
+        self.vggt_injector = None   # Bypasses internal DINOv2 patch_embed
 
-        # ── Stage 3: VGGT (frozen, loaded later) ──
-        # Will be set by load_pretrained()
-        self.aggregator = None     # VGGT alternating-attention
-        self.camera_head = None    # Pose prediction head
-        self.depth_head = None     # Depth prediction head
-
-        # ── Stage 4: EPGGS Heads (trainable) ──
-        # Intensity head: predicts grayscale from VGGT tokens
-        self.intensity_head = None  # Will be built after VGGT dims are known
-        # Gaussian head: predicts R, S, α from depth+intensity+VGGT features
-        self.gaussian_head = None   # Adapted from EvGGS GSRegressor
+        # ── Stage 3: EPGGS Heads (trainable) ──
+        self.intensity_head = None  # Grayscale UNet Decoder
+        self.gaussian_head = None   # R,S,α predictor (EvGGS GSRegressor)
 
         self._vggt_loaded = False
+        self._heads_built = False
+
+    def load_pretrained_realm(self):
+        """Load REALM from HuggingFace (viciopoli/REALM)."""
+        from realm.model_factory import REALM_creator
+
+        print("Loading REALM from HuggingFace (viciopoli/REALM)...")
+        self.realm = REALM_creator("mast3r")  # mast3r config has encoder_ev + projector
+        for param in self.realm.parameters():
+            param.requires_grad = False
+        self._realm_loaded = True
+        print("REALM loaded and frozen.")
 
     def load_pretrained_vggt(self):
         """Load frozen VGGT-1B from HuggingFace."""
@@ -107,22 +89,29 @@ class EPGGSModel(nn.Module):
 
     def forward_student_projector(self, event_voxel: torch.Tensor) -> torch.Tensor:
         """
-        Event voxel → Student ViT → Projector → Pseudo DINOv2 tokens.
+        Event voxel → REALM (frozen) → Pseudo DINOv2 tokens.
 
         Args:
-            event_voxel: (B, V, C, H, W) where V = number of views, C = 8 channels
+            event_voxel: (B, V, C, H, W) where V = number of views, C = 5 (voxel grid channels)
 
         Returns:
-            pseudo_tokens: (B*V, N, 1024) DINOv2-style tokens
+            pseudo_tokens: (B*V, N, 1024) DINOv2-style tokens, N = (H/14)^2 + 1
         """
+        if not self._realm_loaded:
+            raise RuntimeError("Call load_pretrained_realm() first!")
+
         B, V, C, H, W = event_voxel.shape
         x = event_voxel.view(B * V, C, H, W)
 
-        # Student ViT forward
-        student_tokens = self.student(x)  # (B*V, N, 768)
+        # REALM forward: encoder_ev → x_norm_patchtokens → projector
+        with torch.no_grad():
+            output = self.realm(x)  # returns dict with patch tokens in DINOv2 space
 
-        # Projector to DINOv2 space
-        pseudo_tokens = self.projector(student_tokens) * self.proj_scale  # (B*V, N, 1024)
+        # Extract patch tokens (REALM output format)
+        if isinstance(output, dict):
+            pseudo_tokens = output["x_norm_patchtokens"]  # (B*V, N_patches, 1024)
+        else:
+            pseudo_tokens = output  # fallback
 
         return pseudo_tokens
 
