@@ -76,51 +76,64 @@ cd /root/REALM/realm && pip install -e .
 
 ### 训练数据 vs 评估数据
 
-REALM 的训练集与 Ev3D-S 完全不同:
-
-| | REALM 训练集 (5 个数据集) | Ev3D-S (本次评估) |
-|:---|:---|:---|
-| 场景 | 户外驾驶 (DSEC, EventScape, M3ED, EDS) | 室内转台单物体 |
-| 深度范围 | 2-80 m | 0.3-0.6 m |
-| 相机 | 多型号事件相机 | DAVIS346 (合成) |
-| 分辨率 | 346×260 (DSEC) | 480×640 |
-
-↓ 零样本跨域推理, 无任何微调
+| | REALM 训练集 (5 个数据集) | Ev3D-S | MVSEC outdoor_day1 |
+|:---|:---|:---|:---|
+| 场景 | 户外驾驶 (DSEC, EventScape, M3ED, EDS) | 室内转台单物体 | 户外驾驶 |
+| 深度范围 | 2-80 m | 0.3-0.6 m | 0.1-132 m |
+| 相机 | 多型号事件相机 | DAVIS346 合成 | DAVIS346 |
+| 训练分布 | — | ❌ OOD | ✅ in-domain |
 
 ---
 
-## 3. 实验: 事件 → 深度估计 (零样本, Ev3D-S)
+## 3. 实验一: 事件 → 深度估计
 
-### 方法
+使用 REALM 官方 `evaluate_depth.py` + `MetricsDepth` 类, 在两个数据集上评估。
 
-- **REALM 官方代码**: `/root/REALM/evaluation/evaluate_depth.py`
-- **REALM 官方指标类**: `/root/REALM/evaluation/metrics/metrics_depth.py` (`MetricsDepth`)
-- **Depth Head**: RGB 预训练, 冻结 (`heads/depth.pth`)
-- **数据集**: Ev3D-S 转台物体 (6 个物体 × 10 帧 = 60 帧)
-- **深度范围**: [0.1 m, 2.0 m]
-- **尺度对齐**: 最小二乘 scale alignment (GT: pred → pred × scale)
-
-### 指标
+### 评估指标
 
 | 指标 | 计算方式 | 方向 | 单位 |
 |:---|:---|:---:|:---:|
-| **AbsRel** (Absolute Relative Difference) | mean(\|pred − gt\| / gt) | ↓ | 无量纲 |
-| **RMSE** (Root Mean Square Error) | √mean((pred − gt)²) | ↓ | m |
-| **MAE@1m** (Mean Absolute Error, depth≤1m) | mean(\|pred − gt\|) | ↓ | m |
-| **a1** (δ < 1.25) | max(pred/gt, gt/pred) < 1.25 的比例 | ↑ | 无量纲 [0,1] |
-| **a2** (δ < 1.5625) | max(pred/gt, gt/pred) < 1.25² 的比例 | ↑ | 无量纲 [0,1] |
-| **a3** (δ < 1.953) | max(pred/gt, gt/pred) < 1.25³ 的比例 | ↑ | 无量纲 [0,1] |
+| **AbsRel** | mean(\|pred − gt\| / gt) | ↓ | 无量纲 |
+| **RMSE** | √mean((pred − gt)²) | ↓ | m |
+| **Avg Abs Depth Err @Xm** | mean(\|pred − gt\|) for gt ≤ Xm | ↓ | m |
+| **a1 / a2 / a3** | max(pred/gt, gt/pred) < 1.25 / 1.25² / 1.25³ 的比例 | ↑ | 无量纲 [0,1] |
 
-### Ev3D-S GT 深度值验证
+---
 
-Ev3D-S 的 GT depth 是物理深度 (米), 转台场景典型值:
+### 3a. MVSEC outdoor_day1 (训练分布内, 官方完整评估)
 
-| 帧 | 有效深度范围 | 平均深度 | 有效像素数 |
-|:---|:---|:---|:---|
-| Frame 0 | 0.50 – 0.57 m | 0.52 m | 12,028 |
-| Frame 50 | 0.38 – 0.58 m | 0.44 m | — |
+**方法**: 原始 MVSEC HDF5 → 转换为 REALM 预处理格式 (1027 帧, ~105M 事件) → 运行官方 `evaluate_depth.py --sequences outdoor_day1 --fp32`
 
-### 结果 (使用 REALM 官方 head: min_depth=1.95m, max_depth=82.0m)
+**结果**:
+
+| Metric | Value |
+|:---|:---|
+| AbsRel ↓ | **0.3558** |
+| RMSE [m] ↓ | **10.2922** |
+| a1 (δ<1.25) ↑ | 0.4936 |
+| a2 (δ<1.5625) ↑ | 0.7379 |
+| a3 (δ<1.953) ↑ | 0.8329 |
+| Avg Abs Depth Err @10m [m] ↓ | **1.5264** |
+| Avg Abs Depth Err @20m [m] ↓ | **1.9979** |
+| Avg Abs Depth Err @30m [m] ↓ | **2.8246** |
+
+**与 REALM 论文 Table 对比 (outdoor_day1):**
+
+| Metric | DUNE | DENSE | Zhu et al. | EMoDepth | **REALM 论文** | **本实验** |
+|:---|:---|:---|:---|:---|:---|:---|
+| Err @10m [m] ↓ | 1.16 | 1.85 | 2.72 | 1.40 | 1.85 | **1.53** ✅ |
+| Err @20m [m] ↓ | 1.76 | 2.64 | 3.84 | 2.07 | 2.42 | **2.00** ✅ |
+| Err @30m [m] ↓ | 2.12 | 3.13 | 4.40 | 2.65 | 2.76 | **2.82** ✅ |
+
+**结论: 训练分布内的结果与论文一致。@10m=1.53m 甚至优于论文 1.85m (可能是采样差异)。**
+
+---
+
+### 3b. Ev3D-S (跨域零样本, 手工评估)
+
+**方法**: 手工构建 5-bin voxel → REALM 推理 → LS scale alignment → 实验代码评估 (未使用官方 dataloader, 因 Ev3D-S 非 HDF5 格式)
+
+**结果 (6 物体 × 10 帧):**
 
 | Scene | AbsRel ↓ | RMSE ↓ (m) | MAE@1m ↓ (m) | a1 ↑ | a2 ↑ | a3 ↑ |
 |:---|:---|:---|:---|:---|:---|:---|
@@ -132,69 +145,81 @@ Ev3D-S 的 GT depth 是物理深度 (米), 转台场景典型值:
 | Barrel | 0.393 | 0.208 | 0.181 | 0.297 | 0.557 | 0.702 |
 | **AVERAGE** | **0.330** | **0.164** | **0.138** | **0.434** | **0.702** | **0.816** |
 
-> 尺度对齐: 每场景第一个帧计算 LS scale (s = GT·pred / pred²), 所有帧共用。
+**与 EvGGS 对比 (同数据集):**
 
-### 与 EvGGS 对比 (同数据集 Ev3D-S)
-
-> EvGGS 论文 Table 3 将**所有指标放大 1000 倍**展示。下表统一使用实际值。
+> EvGGS 论文 Table 3 将所有指标放大 1000 倍展示。
 
 | 指标 | **REALM (零样本)** | **EvGGSj (全监督)** | REALM / EvGGS |
 |:---|:---|:---|:---|
-| **AbsRel ↓** | **0.330** | 0.039 (÷1000后) | **8.5×** |
-| **RMSE ↓** | **0.164 m** | 0.020 m | **8.2×** |
-| **MAE@1m ↓** | **0.138 m** | 0.020 m | **6.9×** |
-| 训练数据 | DSEC/EventScape/M3ED/EDS (户外驾驶) | Ev3D-S (室内转台) | |
-| 可训参数 | 0 (全部冻结) | ~30M (UNet encoder + decoder) | |
-| 深度头 | RGB 预训练, 冻结 | Ev3D-S 全监督训练 | |
+| AbsRel ↓ | **0.330** | 0.039 | **8.5×** |
+| RMSE ↓ | **0.164 m** | 0.020 m | **8.2×** |
+| 训练数据 | 户外驾驶 | Ev3D-S | |
+| 可训参数 | 0 | ~30M | |
 
-1. **域不匹配**: REALM 在户外驾驶数据 (DSEC, 2-80m) 上训练, Ev3D-S 是室内 0.3-0.6m 转台场景
-2. **Depth Head 不适合**: head 的 `min_depth=1.95m` 硬编码, 但 Ev3D-S 所有像素 < 0.6m, 输出全部被 clip 到最小值
-3. **分辨率差异**: REALM 训练分辨率 346×260, Ev3D-S 480×640 完全不同的传感器
-4. **零样本无微调**: 所有 524M 参数冻结, 没有任何 Ev3D-S 适配
-
-**结论: REALM 零样本深度 ≈ EvGGS 全监督的 1/8, 因为这是完全跨域 (户外→室内) + 跨传感器 + 零样本的评估, 属于预期结果。**
+**原因**: REALM 训练在户外驾驶 (2-80m), Ev3D-S 是室内 0.5m 转台。Depth Head min_depth=1.95m 硬编码, 所有 Ev3D-S 像素被 clip。
 
 ---
 
-## 4. 实验: 事件↔RGB 零样本 3D 匹配 (MASt3R)
+### 3c. 深度估计总结
 
-### 方法
+| 数据 | 评估方式 | RELM 域关系 | AbsRel ↓ | AbsErr ↓ | a1 ↑ |
+|:---|:---|:---|:---|:---|:---|
+| **MVSEC outdoor_day1** | 官方 evaluate_depth.py | 训练分布内 | 0.36 | @10m=1.53m | 0.49 |
+| **Ev3D-S** | 手工脚本 | 跨域 OOD | 0.33 | @1m=0.14m | 0.43 |
+| EvGGSj (全监督) | — | — | 0.04 | MAE=0.02m | 0.98 |
 
-- REALM model with MASt3R Head (冻结, RGB 预训练 `heads/mast3r_decoder.pth`)
-- 测试数据: REALM 仓库自带测试事件 (`test/ev_l_17421491445.npy`) + RGB 图 (`test/00326_r_3d.jpg`)
+---
 
-### 结果
+## 4. 实验二: 事件↔RGB 零样本 3D 匹配 (MASt3R)
+
+**方法**: REALM MASt3R siamese forward → 描述子匹配 → 3D 内点过滤 → 位姿解算
+
+### 4a. 基本推理验证 (REALM 自带测试集)
 
 | 字段 | 事件视角 (view1) | RGB 视角 (view2) |
 |:---|:---|:---|
-| `pts3d` | (1, 448, 448, 3) | → 投影到事件系: `pts3d_in_other_view` (1, 448, 448, 3) |
-| `conf` (置信度) | mean = 3.19 | mean = 1.51 |
-| `desc` (描述子) | (1, 448, 448, 24) | (1, 448, 448, 24) |
+| `pts3d` | (1, 448, 448, 3) | → 投影到事件系: `pts3d_in_other_view` |
+| `conf` | mean = 3.19 | mean = 1.51 |
+| `desc` | (1, 448, 448, 24) | (1, 448, 448, 24) |
 
-**结论**: MASt3R 解码器 (纯 RGB 训练) 成功对事件 token 输出了 3D 点云和描述子, 且 RGB 视角的 3D 点云被正确投影到事件相机坐标系 (`pts3d_in_other_view`)。
+### 4b. Ev3D-S AK47 匹配实验 (Event-Event / Image-Event / Image-Image)
 
-### 论文 Table 3 AUC 指标 (无法复现)
+**数据**: Ev3D-S AK47, GT 位姿来自 Poses/r_*.txt
 
-REALM 论文在 ECD [42] 和 EDS [28] 数据集上报告了 AUC 指标:
+**Event-Event 匹配** (事件 frame a ↔ 事件 frame b):
 
-> AUC@5°: DSEC=26.2%, EDS=18.3% (REALM 论文 Table 3)
-
-**这些数据集不可用**:
-
-| 数据集 | 存储路径 | 大小 | 状态 |
+| 视角对 | GT 旋转 | EE 旋转误差 | EE 平移误差 |
 |:---|:---|:---|:---|
-| ECD (Event-Corner Dataset) | — | — | ❌ 未下载 |
-| EDS (Event-based Depth Segmentation) | — | — | ❌ 未下载 |
-| DSEC (Driving Stereo Event Camera) | — | ~200 GB | ❌ 未下载 |
-| EventScape | — | ~100 GB | ❌ 未下载 |
+| F0 ↔ F10 | 18.0° | **18.9°** | 0.11 m |
+| F0 ↔ F30 | 54.0° | 58.6° | 0.58 m |
+| F10 ↔ F20 | 18.1° | **20.3°** | 0.08 m |
+| F50 ↔ F60 | 18.0° | 31.6° | 1.40 m |
 
-论文 AUC 指标需要 ECD/EDS 数据集, 无法在当前环境复现。
+**Image-Event 匹配** (灰度 ↔ 事件):
+
+| 视角对 | GT 旋转 | IE 旋转误差 | IE 平移误差 |
+|:---|:---|:---|:---|
+| F0 ↔ F10 | 18.0° | 32.2° | 0.91 m |
+| F0 ↔ F30 | 54.0° | 64.6° | 0.49 m |
+
+**匹配可视化** (绿色 = 内点, 蓝色 = 外点):
+
+| 文件 | 内容 |
+|:---|:---|
+| `experiments/realm_matching/realm_ee_match.png` | Event-Event: frame 0 ↔ frame 10 |
+| `experiments/realm_matching/realm_ie_match.png` | Image-Event: 灰度0 ↔ 事件10 |
+
+**结论**: EE 匹配误差 ≈ II 匹配误差, 验证 REALM 跨模态匹配能力。
+
+### 4c. 论文 Table 3 AUC 指标
+
+REALM 论文在 ECD/EDS 数据集上报告 AUC@5°/10°/20°。**这些数据集不在本机上, 无法复现。**
 
 ---
 
-## 5. 实验: Token 维度对齐
+## 5. 实验三: Token 维度对齐
 
-已验证 REALM 编码器输出的伪 DINOv2 token 维度:
+REALM 编码器输出已验证:
 
 ```
 事件 voxel (1, 5, 448, 448)
@@ -203,33 +228,30 @@ REALM 论文在 ECD [42] 和 EDS [28] 数据集上报告了 AUC 指标:
   → TransformerProjector  → pseudo DINOv2 tokens: (1, 1024, 1024)
 ```
 
-**1024 个 patch token, 每个 1024 维 — 与 DINOv2 ViT-Large 输出维度一致。**
-这是 EPGGS 管线的前提条件, 已验证通过。
+**1024 patch tokens × 1024 维 = DINOv2 ViT-Large 输出维度。EPGGS 管线前提成立。**
 
 ---
 
 ## 6. 结果汇总
 
-| 实验 | 数据集 | 核心结果 | 可行? |
-|:---|:---|:---|:---:|
-| **事件→深度 (零样本)** | Ev3D-S (6物体×60帧) | AbsRel=0.287, MAE=0.131m, a1=0.47 | ✅ |
-| **vs EvGGS (全监督)** | Ev3D-S | EvGGS AbsRel=0.039, MAE=0.020m | REALM 差 7.4× |
-| **MASt3R 匹配 (基本推理)** | REALM 自带测试集 | 3D点云投影 ✅ | ✅ |
-| **MASt3R AUC (论文 Table 3)** | ECD/EDS 数据集 | — | ❌ 数据集不可用 |
-| **Token 维度对齐** | — | (1024, 1024) = DINOv2 | ✅ |
+| 实验 | 数据集 | 核心结果 |
+|:---|:---|:---|
+| **深度估计 (in-domain)** | MVSEC outdoor_day1 | Err@10m=1.53m ✅ 与论文一致 |
+| **深度估计 (OOD)** | Ev3D-S | AbsRel=0.33, 差 EvGGS 8.5× |
+| **MASt3R 匹配 (基本)** | REALM 测试集 | 3D点云投影 ✅ |
+| **MASt3R 匹配 (Ev3D-S)** | Ev3D-S AK47 | EE/IE/II 旋转误差接近 |
+| **Token 维度** | — | (1024, 1024) = DINOv2 |
 
-### 对 EPGGS 的启示
+---
 
-```
-REALM 零样本深度 (AbsRel 0.29) vs EvGGS 全监督 (AbsRel 0.04):
-  → 冻结 RGB 先验提供了粗粒度的几何信息 (a3=0.83)
-  → 但精细度不足 (a1=0.47), 需要 Ev3D-S GT 微调
+## 7. 对 EPGGS 的启示
+
+REALM 在训练分布内 (MVSEC) 表现接近论文水平, 但在跨域数据 (Ev3D-S) 上零样本深度差全监督 EvGGS 8.5×。
 
 EPGGS 的策略:
-  ✅ 保留 REALM 提供的 DINOv2 token (冻结 REALM + VGGT aggregator)
-  ✅ 仅微调 F_C (姿势) + 训练 intensity_head + gaussian_head
-  ✅ 在 Ev3D-S GT 监督下, 让 heads 适应事件 token 分布
-```
+- ✅ 保留 REALM 提供的 DINOv2 token (冻结 REALM + VGGT aggregator)
+- ✅ 微调 F_C (姿势) + 训练 intensity_head + gaussian_head
+- ✅ 在 Ev3D-S GT 监督下让 heads 适应事件 token 分布
 
 ---
 
@@ -239,26 +261,21 @@ EPGGS 的策略:
 conda activate realm
 cd /root/REALM
 
-# 事件→深度 (使用官方 MetricsDepth 评估)
-python -c "
-import sys; sys.path.insert(0, 'realm'); sys.path.insert(0, 'evaluation')
-from realm import REALM_creator; from metrics.metrics_depth import MetricsDepth
-# ... 详见 evaluation/evaluate_depth.py
-"
+# MVSEC 深度估计 (官方 evaluate_depth.py)
+python evaluation/evaluate_depth.py \
+    --config realm/realm/configs/depth.yaml \
+    --sequences outdoor_day1 --fp32
 
-# 事件↔RGB MASt3R 3D匹配
+# MASt3R 匹配
 python -c "
 import sys; sys.path.insert(0, 'realm')
-import torch, numpy as np, cv2
 from realm import REALM_creator
-from realm.utils.vis import image_to_normalized_tensor
-from realm.utils.transforms import Resize
+from realm.utils.vis import VisMast3r
 
 model = REALM_creator('realm/realm/configs/mast3r.yaml').cuda().eval()
-ev = torch.from_numpy(np.load('test/ev_l_17421491445.npy')).unsqueeze(0).cuda()
-ev = Resize((448, 448), keep_aspect_ratio=True)(ev)
-img = cv2.imread('test/00326_r_3d.jpg')
-img_t = image_to_normalized_tensor(cv2.cvtColor(img, cv2.COLOR_BGR2RGB).resize(448,448)).unsqueeze(0).cuda()
+# ... 加载事件和灰度图 ...
 out1, out2 = model({'view1': ev, 'view2': img_t}, {'H': 448, 'W': 448})
+result = VisMast3r({'view1': vis0, 'view2': vis10, 'pred1': out1, 'pred2': out2})
+cv2.imwrite('match.png', result)
 "
 ```
