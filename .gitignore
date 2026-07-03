@@ -11,3 +11,5 @@ checkpoints/
 .DS_Store
 .vscode/
 .idea/
+.gitignore
+.ipynb_checkpoints/
