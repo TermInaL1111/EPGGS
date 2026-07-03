@@ -135,17 +135,20 @@ Ev3D-S 的 GT depth 是物理深度 (米), 转台场景典型值:
 ### 与 EvGGS 对比 (同数据集 Ev3D-S)
 
 > EvGGS 论文 Table 3 将**所有指标放大 1000 倍**展示。
-> 下表数据已除以 1000, 还原为实际值。
+> 为对齐比较, 下表 REALM 列也 ×1000。
 
-| 指标 | **REALM (零样本)** | **EvGGSj (全监督)** [Wang et al. 2024] | 差距 |
+| 指标 | **REALM (零样本)** × 1000 | **EvGGSj (全监督)** [Wang et al. 2024] × 1000 | REALM / EvGGS |
 |:---|:---|:---|:---|
-| **AbsRel ↓** | **0.287** (无纲量) | **0.039** (/1000 = 0.0394) | **REALM 差 7.3×** |
-| **RMSE ↓** | 0.154 m | 0.020 m (≈2.0cm, Table3 = 1.95÷1000) | REALM 差 7.7× |
-| 训练数据 | 5 个驾驶数据集 (DSEC/EventScape/M3ED/EDS) | Ev3D-S (80 物体, 带深度GT) | |
+| **AbsRel ↓** | **287** | **39.4** | 7.3× |
+| **RMSE ↓** | 154  | 1.95 | 79× |
+| 训练数据 | 5 个驾驶数据集 (DSEC/EventScape/M3ED/EDS) | Ev3D-S (80 物体, 带GT) | |
 | 可训参数 | 0 (全部冻结) | ~30M (UNet encoder + decoder) | |
-| 相机分辨率 | 346×260 (DSEC训练) → 480×640 (Ev3D-S推理) | 480×640 (训练+推理) | |
+| 深度头 | RGB 预训练 | Ev3D-S 监督训练 | |
 
-**REALM 零样本深度比 EvGGS 全监督差 ~7×**, 原因:
+换算回实际值: REALM AbsRel=0.287, RMSE=0.154m (15.4cm)。
+EvGGS AbsRel=0.039, RMSE=0.002m (若严格÷1000) 或 ~0.02m (cm单位, 与 MAE=2cm 一致)。
+
+**REALM 零样本 ≈ 全监督 EvGGS 的 7×(AbsRel) ~ 79×(RMSE)**, 原因:
 
 1. **域不匹配**: REALM 的 Vox2PatchEmbed + LoRA 在户外驾驶数据 (2-80m) 上训练, Ev3D-S 是室内 0.5m 转台场景
 2. **RGB 头搬运**: Depth Head 从 RGB 预训练权重直接搬运, 从未见过事件 token
